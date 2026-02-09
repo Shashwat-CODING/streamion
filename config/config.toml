@@ -1,0 +1,60 @@
+#####
+# Invidious Companion Configuration
+# 
+# See https://toml.io/en/ for details on the configuration format.
+#####
+
+[server]
+port = 8000                        # env: PORT
+host = "0.0.0.0"                   # env: HOST
+secret_key = "0123456789abcdef"    # env: SERVER_SECRET_KEY
+
+# Optional Server Settings
+# use_unix_socket = false          # env: SERVER_USE_UNIX_SOCKET
+# unix_socket_path = "/tmp/invidious-companion.sock"
+base_path = "/"                  # env: SERVER_BASE_PATH
+# verify_requests = false          # env: SERVER_VERIFY_REQUESTS
+# encrypt_query_params = false     # env: SERVER_ENCRYPT_QUERY_PARAMS
+enable_metrics = true              # env: SERVER_ENABLE_METRICS
+
+[cache]
+enabled = false                    # env: CACHE_ENABLED
+# directory = "/var/tmp"           # env: CACHE_DIRECTORY
+
+[networking]
+# Auto Proxy Settings
+# auto_proxy: enable automatic proxy fetching (rotates on failure)
+auto_proxy = false               # env: NETWORKING_AUTO_PROXY
+
+# VPN Source: Which service to use for auto_proxy
+# 1 = AntPeak (Default)
+# 2 = Urban VPN
+# 3 = Custom Proxy API (self hosted)
+vpn_source = 2                    # env: NETWORKING_VPN_SOURCE
+
+# Manual Proxy (overrides auto_proxy if set)
+ proxy = "http://127.0.0.1:8080"
+
+# IPv6 Rotation
+# ipv6_block = "2001:db8::/32"     # env: NETWORKING_IPV6_BLOCK
+
+[networking.videoplayback]
+ump = false                        # env: NETWORKING_VIDEOPLAYBACK_UMP
+video_fetch_chunk_size_mb = 5      # env: NETWORKING_VIDEOPLAYBACK_VIDEO_FETCH_CHUNK_SIZE_MB
+
+[networking.fetch]
+# timeout_ms = 30000               # env: NETWORKING_FETCH_TIMEOUT_MS
+
+[networking.fetch.retry]
+# enabled = false                  # env: NETWORKING_FETCH_RETRY_ENABLED
+# times = 1                        # env: NETWORKING_FETCH_RETRY_TIMES
+# initial_debounce = 0
+# debounce_multiplier = 0
+
+[jobs.youtube_session]
+po_token_enabled = true            # env: JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED
+frequency = "*/5 * * * *"          # env: JOBS_YOUTUBE_SESSION_FREQUENCY
+
+[youtube_session]
+# oauth_enabled = true             # env: YOUTUBE_SESSION_OAUTH_ENABLED
+# cookies = ""                     # env: YOUTUBE_SESSION_COOKIES
