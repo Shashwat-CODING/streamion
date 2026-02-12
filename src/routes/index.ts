@@ -11,6 +11,7 @@ import invidiousSearchApi from "./invidious_routes/search.ts";
 import invidiousChannelsApi from "./invidious_routes/channels.ts";
 import invidiousPlaylistsApi from "./invidious_routes/playlists.ts";
 import invidiousMixesApi from "./invidious_routes/mixes.ts";
+
 import getDownloadHandler from "./invidious_routes/download.ts";
 import videoPlaybackProxy from "./videoPlaybackProxy.ts";
 import type { Config } from "../lib/helpers/config.ts";
@@ -55,6 +56,7 @@ export const companionRoutes = (
     app.route("/api/v1/channels", invidiousChannelsApi);
     app.route("/api/v1/playlists", invidiousPlaylistsApi);
     app.route("/api/v1/mixes", invidiousMixesApi);
+
     app.route("/videoplayback", videoPlaybackProxy);
 };
 

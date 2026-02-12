@@ -38,8 +38,20 @@ func handleTunneling(w http.ResponseWriter, r *http.Request) {
 		dest = r.Host
 	}
 
+	// Hijack the connection first to allow custom response writing
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+		return
+	}
+	client_conn, _, err := hijacker.Hijack()
+	if err != nil {
+		// If hijack fails, we can't do much as headers might be sent or connection broken
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
 	var dest_conn net.Conn
-	var err error
 
 	if tnet == nil {
 		dest_conn, err = net.DialTimeout("tcp", dest, 10*time.Second)
@@ -49,20 +61,24 @@ func handleTunneling(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		log.Printf("[ERROR] TUNNEL Dial failed to %s: %v", dest, err)
+		// Send a 503 to the client through the hijacked connection and close
+		// Simple HTTP response since we hijacked
+		client_conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
+		client_conn.Close()
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
-		return
-	}
-	client_conn, _, err := hijacker.Hijack()
+
+	// Write 200 Connection Established to the client
+	// This signals the client that the tunnel is ready
+	_, err = client_conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return // Return early if hijack failed
+		log.Printf("[ERROR] TUNNEL Write 200 failed: %v", err)
+		dest_conn.Close()
+		client_conn.Close()
+		return
 	}
+
 	go transfer(dest_conn, client_conn)
 	go transfer(client_conn, dest_conn)
 }

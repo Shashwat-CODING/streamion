@@ -409,47 +409,211 @@ videos.get("/:videoId", async (c) => {
         }
     }
 
-    // Get allowed regions
-    const allowedRegions = youtubePlayerResponseJson.microformat?.playerMicroformatRenderer?.availableCountries || [];
+    // Get raw YouTube response data
+    const videoDetails = (youtubePlayerResponseJson as any).videoDetails || {};
+    const microformat = (youtubePlayerResponseJson as any).microformat?.playerMicroformatRenderer || {};
+    const playabilityStatus = (youtubePlayerResponseJson as any).playabilityStatus || {};
+    const streamingDataRaw = (youtubePlayerResponseJson as any).streamingData || {};
+    const captionsRaw = (youtubePlayerResponseJson as any).captions || {};
+    const storyboardsRaw = (youtubePlayerResponseJson as any).storyboards || {};
+
+    // Map thumbnails directly from videoDetails
+    const thumbnailArray = [];
+    if (videoDetails.thumbnail?.thumbnails) {
+        for (const thumb of videoDetails.thumbnail.thumbnails) {
+            thumbnailArray.push({
+                url: thumb.url,
+                width: thumb.width,
+                height: thumb.height,
+            });
+        }
+    }
+
+    // Map storyboards directly from API response
+    const storyboardsArray = [];
+    if (storyboardsRaw.playerStoryboardSpecRenderer?.spec) {
+        const spec = storyboardsRaw.playerStoryboardSpecRenderer.spec;
+        const specParts = spec.split('|');
+
+        for (let i = 3; i < specParts.length; i++) {
+            const parts = specParts[i].split('#');
+            if (parts.length >= 8) {
+                const baseUrl = specParts[0];
+                const [width, height, count, columns, rows, interval, name, sigh] = parts;
+                const storyboardCount = Math.ceil(parseInt(count) / (parseInt(columns) * parseInt(rows)));
+
+                const urls = [];
+                for (let j = 0; j < storyboardCount; j++) {
+                    let url = baseUrl.replace('$L', i - 3).replace('$N', name) + j;
+                    if (sigh) url += '&sigh=' + sigh;
+                    urls.push(url);
+                }
+
+                storyboardsArray.push({
+                    width: width,
+                    height: height,
+                    thumbsCount: count,
+                    columns: columns,
+                    rows: rows,
+                    interval: interval,
+                    storyboardCount: storyboardCount,
+                    url: urls,
+                });
+            }
+        }
+    }
+
+    // Map captions directly from API response
+    const captionTracks = [];
+    if (captionsRaw.playerCaptionsTracklistRenderer?.captionTracks) {
+        for (const track of captionsRaw.playerCaptionsTracklistRenderer.captionTracks) {
+            captionTracks.push({
+                baseUrl: track.baseUrl,
+                name: track.name?.simpleText || track.languageCode,
+                vssId: track.vssId || "",
+                languageCode: track.languageCode,
+                isTranslatable: track.isTranslatable ?? true,
+            });
+        }
+    }
+
+    // Map audioTracks directly from API response
+    const audioTracks = [];
+    if (captionsRaw.playerCaptionsTracklistRenderer?.audioTracks) {
+        for (const track of captionsRaw.playerCaptionsTracklistRenderer.audioTracks) {
+            audioTracks.push({
+                languageName: track.displayName || track.id,
+                languageCode: track.id,
+            });
+        }
+    } else if (captionsRaw.playerCaptionsTracklistRenderer?.captionTracks) {
+        // Fallback: extract unique languages from caption tracks
+        const uniqueLangs = new Set();
+        for (const track of captionsRaw.playerCaptionsTracklistRenderer.captionTracks) {
+            const langCode = track.languageCode;
+            if (!uniqueLangs.has(langCode)) {
+                uniqueLangs.add(langCode);
+                audioTracks.push({
+                    languageName: track.name?.simpleText || langCode,
+                    languageCode: langCode,
+                });
+            }
+        }
+    }
+
+    // Map formats directly from streamingData
+    const formatsArray = [];
+    if (streamingDataRaw.formats) {
+        for (const format of streamingDataRaw.formats) {
+            const formatObj: any = {
+                itag: format.itag,
+                url: format.url,
+                mimeType: format.mimeType,
+                bitrate: format.bitrate,
+                width: format.width || 0,
+                height: format.height || 0,
+                lastModified: format.lastModified,
+                contentLength: format.contentLength,
+                quality: format.quality,
+                fps: format.fps,
+                qualityLabel: format.qualityLabel,
+                projectionType: format.projectionType || "RECTANGULAR",
+                averageBitrate: format.averageBitrate,
+                approxDurationMs: format.approxDurationMs,
+            };
+
+            if (format.audioQuality) formatObj.audioQuality = format.audioQuality;
+            if (format.audioSampleRate) formatObj.audioSampleRate = format.audioSampleRate;
+            if (format.audioChannels) formatObj.audioChannels = format.audioChannels;
+            if (format.qualityLabel) {
+                formatObj.qualityOrdinal = "QUALITY_ORDINAL_" + format.qualityLabel.replace(/\d+/, "").replace('p', 'P');
+            }
+
+            formatsArray.push(formatObj);
+        }
+    }
+
+    // Map adaptiveFormats directly from streamingData
+    const adaptiveFormatsArray = [];
+    if (streamingDataRaw.adaptiveFormats) {
+        for (const format of streamingDataRaw.adaptiveFormats) {
+            const adaptiveFormat: any = {
+                itag: format.itag,
+                url: format.url,
+                mimeType: format.mimeType,
+                bitrate: format.bitrate,
+                width: format.width || 0,
+                height: format.height || 0,
+                lastModified: format.lastModified,
+                contentLength: format.contentLength,
+                quality: format.quality,
+                fps: format.fps,
+                qualityLabel: format.qualityLabel,
+                projectionType: format.projectionType || "RECTANGULAR",
+                averageBitrate: format.averageBitrate,
+                approxDurationMs: format.approxDurationMs,
+            };
+
+            if (format.initRange) {
+                adaptiveFormat.initRange = {
+                    start: format.initRange.start,
+                    end: format.initRange.end,
+                };
+            }
+            if (format.indexRange) {
+                adaptiveFormat.indexRange = {
+                    start: format.indexRange.start,
+                    end: format.indexRange.end,
+                };
+            }
+
+            if (format.audioQuality) adaptiveFormat.audioQuality = format.audioQuality;
+            if (format.audioSampleRate) adaptiveFormat.audioSampleRate = format.audioSampleRate;
+            if (format.audioChannels) adaptiveFormat.audioChannels = format.audioChannels;
+            if (format.colorInfo) adaptiveFormat.colorInfo = format.colorInfo;
+            if (format.highReplication) adaptiveFormat.highReplication = format.highReplication;
+            if (format.loudnessDb !== undefined) adaptiveFormat.loudnessDb = format.loudnessDb;
+
+            if (format.qualityLabel) {
+                adaptiveFormat.qualityOrdinal = "QUALITY_ORDINAL_" + format.qualityLabel.replace(/\d+/, "").replace('p', 'P');
+            } else {
+                adaptiveFormat.qualityOrdinal = "QUALITY_ORDINAL_UNKNOWN";
+            }
+
+            adaptiveFormatsArray.push(adaptiveFormat);
+        }
+    }
+
+    const currentTimestamp = Math.floor(Date.now() / 1000);
 
     const response = {
-        type: "video",
-        title: details.title || "",
-        videoId: videoId,
-        videoThumbnails: generateThumbnails(videoId, thumbnailBaseUrl),
-        storyboards: parseStoryboards(videoInfo.storyboards, videoId),
-        description: details.short_description || "",
-        descriptionHtml: descriptionToHtml(details.short_description || ""),
-        published: publishedTimestamp,
-        publishedText: publishedText,
-        keywords: details.keywords || [],
-        viewCount: details.view_count || 0,
-        likeCount: details.like_count || 0,
-        dislikeCount: 0, // YouTube no longer provides dislike count
-        paid: false,
-        premium: false,
-        isFamilyFriendly: youtubePlayerResponseJson.microformat?.playerMicroformatRenderer?.isFamilySafe ?? true,
-        allowedRegions: allowedRegions,
-        genre: youtubePlayerResponseJson.microformat?.playerMicroformatRenderer?.category || "Unknown",
-        genreUrl: null,
-        author: details.author || "",
-        authorId: details.channel_id || "",
-        authorUrl: `/channel/${details.channel_id || ""}`,
-        authorVerified: false, // Would need additional API call to check
-        authorThumbnails: authorThumbnails,
-        subCountText: "", // Would need additional API call
-        lengthSeconds: details.duration || 0,
-        allowRatings: details.allow_ratings ?? true,
-        rating: 0,
-        isListed: !details.is_unlisted,
-        liveNow: details.is_live || false,
-        isPostLiveDvr: details.is_post_live_dvr || false,
-        isUpcoming: details.is_upcoming || false,
-        dashUrl: `${origin}/api/manifest/dash/id/${videoId}`,
-        adaptiveFormats: adaptiveFormats,
-        formatStreams: formatStreams,
-        captions: captions,
-        recommendedVideos: recommendedVideos,
+        status: playabilityStatus.status || "OK",
+        id: videoDetails.videoId || videoId,
+        title: videoDetails.title || "",
+        lengthSeconds: videoDetails.lengthSeconds || "0",
+        keywords: videoDetails.keywords || [],
+        channelTitle: videoDetails.author || "",
+        channelId: videoDetails.channelId || "",
+        description: videoDetails.shortDescription || "",
+        thumbnail: thumbnailArray,
+        allowRatings: videoDetails.allowRatings ?? true,
+        viewCount: videoDetails.viewCount || "0",
+        isPrivate: videoDetails.isPrivate || false,
+        isUnpluggedCorpus: videoDetails.isUnpluggedCorpus || false,
+        isLiveContent: videoDetails.isLiveContent || false,
+        storyboards: storyboardsArray,
+        captions: {
+            captionTracks: captionTracks,
+        },
+        audioTracks: audioTracks,
+        defaultVideoLanguage: microformat.defaultLanguage || "English",
+        defaultVideoLanguageCode: microformat.defaultLanguage || "en",
+        fetchedTS: currentTimestamp,
+        expiresInSeconds: streamingDataRaw.expiresInSeconds || "21540",
+        formats: formatsArray,
+        isGCR: false,
+        adaptiveFormats: adaptiveFormatsArray,
+        availableAt: currentTimestamp,
     };
 
     return c.json(response);

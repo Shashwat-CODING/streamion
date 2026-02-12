@@ -40,6 +40,12 @@ while ! curl -v http://127.0.0.1:8080/ 2>&1 | grep "Proxy Running"; do
 done
 echo "[ENTRYPOINT] Proxy is ready!"
 
+# Start Proxy Check
+echo "[ENTRYPOINT] Checking proxy connection..."
+curl -s -x http://127.0.0.1:8080 https://cloudflare.com/cdn-cgi/trace
+echo ""
+echo "[ENTRYPOINT] Proxy check complete."
+
 # Start Streamion
 echo "[ENTRYPOINT] Starting Streamion..."
 exec deno task dev
