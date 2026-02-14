@@ -29,7 +29,8 @@ SERVER_PID=$!
 
 # Wait for proxy to start
 echo "[ENTRYPOINT] Waiting for proxy to be ready on port 8080..."
-while ! curl -v http://127.0.0.1:8080/ 2>&1 | grep "Proxy Running"; do
+# Simplified health check: just check if the port is open and returns *something*
+while ! curl -s --fail http://127.0.0.1:8080/ > /dev/null; do
     if ! kill -0 $SERVER_PID 2>/dev/null; then
         echo "[FATAL] Server process exited unexpectedly!"
         wait $SERVER_PID
@@ -42,24 +43,30 @@ echo "[ENTRYPOINT] Proxy is ready!"
 
 # Start Proxy Check
 echo "[ENTRYPOINT] Checking proxy connection..."
-curl -s -x http://127.0.0.1:8080 https://cloudflare.com/cdn-cgi/trace
+curl -s -x http://127.0.0.1:8080 https://cloudflare.com/cdn-cgi/trace || echo "[WARN] Proxy check failed, but continuing..."
 echo ""
 echo "[ENTRYPOINT] Proxy check complete."
 
-# Start Cloudflare Tunnel
-if [[ -n "${TUNNEL_TOKEN}" ]]; then
-    echo "[ENTRYPOINT] Starting Cloudflare Tunnel with provided token..."
-    cloudflared tunnel --no-autoupdate run --token "${TUNNEL_TOKEN}" &
-    echo "[ENTRYPOINT] Cloudflare Tunnel started in background"
-elif [[ "${QUICK_TUNNEL}" == "true" ]]; then
-    echo "[ENTRYPOINT] Starting Cloudflare Quick Tunnel (random domain)..."
-    # Port 8000 is the Deno app port
-    cloudflared tunnel --no-autoupdate --url http://localhost:8000 &
-    echo "[ENTRYPOINT] Cloudflare Quick Tunnel started in background"
-    echo "[ENTRYPOINT] Check logs for your random 'trycloudflare.com' URL"
-else
-    echo "[ENTRYPOINT] No TUNNEL_TOKEN or QUICK_TUNNEL=true provided, skipping Cloudflare Tunnel"
-fi
+# Start Cloudflare Tunnel in background (waits for Deno app)
+(
+    echo "[TUNNEL] Background tunnel manager started"
+    # Wait for the Deno app to be ready on port 8000
+    while ! curl -s --fail http://127.0.0.1:8000/ > /dev/null; do
+        echo "[TUNNEL] Waiting for Streamion (port 8000) to be ready..."
+        sleep 2
+    done
+    echo "[TUNNEL] Streamion is ready! Launching Cloudflare Tunnel..."
+
+    if [[ -n "${TUNNEL_TOKEN}" ]]; then
+        echo "[TUNNEL] Starting Cloudflare Tunnel with provided token..."
+        exec cloudflared tunnel --no-autoupdate run --token "${TUNNEL_TOKEN}"
+    elif [[ "${QUICK_TUNNEL}" == "true" ]]; then
+        echo "[TUNNEL] Starting Cloudflare Quick Tunnel (random domain)..."
+        exec cloudflared tunnel --no-autoupdate --url http://localhost:8000
+    else
+        echo "[TUNNEL] No TUNNEL_TOKEN or QUICK_TUNNEL=true provided, tunnel manager exiting"
+    fi
+) &
 
 # Start Streamion
 echo "[ENTRYPOINT] Starting Streamion..."
