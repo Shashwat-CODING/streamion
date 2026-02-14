@@ -62,7 +62,7 @@ echo "[ENTRYPOINT] Proxy check complete."
         exec cloudflared tunnel --no-autoupdate run --token "${TUNNEL_TOKEN}"
     elif [[ "${QUICK_TUNNEL}" == "true" ]]; then
         echo "[TUNNEL] Starting Cloudflare Quick Tunnel (random domain)..."
-        exec cloudflared tunnel --no-autoupdate --url http://localhost:8000
+        exec cloudflared tunnel --url http://localhost:8000 --quick-tunnel
     else
         echo "[TUNNEL] No TUNNEL_TOKEN or QUICK_TUNNEL=true provided, tunnel manager exiting"
     fi
