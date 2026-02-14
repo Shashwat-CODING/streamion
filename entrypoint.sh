@@ -46,6 +46,21 @@ curl -s -x http://127.0.0.1:8080 https://cloudflare.com/cdn-cgi/trace
 echo ""
 echo "[ENTRYPOINT] Proxy check complete."
 
+# Start Cloudflare Tunnel
+if [[ -n "${TUNNEL_TOKEN}" ]]; then
+    echo "[ENTRYPOINT] Starting Cloudflare Tunnel with provided token..."
+    cloudflared tunnel --no-autoupdate run --token "${TUNNEL_TOKEN}" &
+    echo "[ENTRYPOINT] Cloudflare Tunnel started in background"
+elif [[ "${QUICK_TUNNEL}" == "true" ]]; then
+    echo "[ENTRYPOINT] Starting Cloudflare Quick Tunnel (random domain)..."
+    # Port 8000 is the Deno app port
+    cloudflared tunnel --no-autoupdate --url http://localhost:8000 &
+    echo "[ENTRYPOINT] Cloudflare Quick Tunnel started in background"
+    echo "[ENTRYPOINT] Check logs for your random 'trycloudflare.com' URL"
+else
+    echo "[ENTRYPOINT] No TUNNEL_TOKEN or QUICK_TUNNEL=true provided, skipping Cloudflare Tunnel"
+fi
+
 # Start Streamion
 echo "[ENTRYPOINT] Starting Streamion..."
 exec deno task dev
