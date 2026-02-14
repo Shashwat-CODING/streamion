@@ -57,16 +57,13 @@ echo "[ENTRYPOINT] Proxy check complete."
     done
     echo "[TUNNEL] Streamion is ready! Launching Cloudflare Tunnel..."
 
-    if [[ -n "${TUNNEL_TOKEN}" ]]; then
-        echo "[TUNNEL] Starting Cloudflare Tunnel with provided token..."
-        exec cloudflared tunnel --no-autoupdate run --token "${TUNNEL_TOKEN}"
-    elif [[ "${QUICK_TUNNEL}" == "true" ]]; then
-        echo "[TUNNEL] Starting Cloudflare Quick Tunnel (random domain)..."
-        # Removed the invalid --quick-tunnel flag; --url triggers it automatically
-        exec cloudflared tunnel --no-autoupdate --url http://localhost:8000
-
-    else
-        echo "[TUNNEL] No TUNNEL_TOKEN or QUICK_TUNNEL=true provided, tunnel manager exiting"
+if [[ -n "${TUNNEL_TOKEN}" ]]; then
+    echo "[TUNNEL] Starting Cloudflare Tunnel with provided token..."
+    exec cloudflared tunnel --no-autoupdate run --token "${TUNNEL_TOKEN}"
+else
+    echo "[TUNNEL] Starting Cloudflare Quick Tunnel (random domain)..."
+    exec cloudflared tunnel --no-autoupdate --url http://localhost:8000
+    
     fi
 ) &
 
