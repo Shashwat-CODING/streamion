@@ -24,7 +24,7 @@ enabled = false                    # env: CACHE_ENABLED
 [networking]
 # Auto Proxy Settings
 # auto_proxy: enable automatic proxy fetching (rotates on failure)
-auto_proxy = false               # env: NETWORKING_AUTO_PROXY
+auto_proxy = true               # env: NETWORKING_AUTO_PROXY
 
 # VPN Source: Which service to use for auto_proxy
 # 1 = AntPeak (Default)
@@ -33,7 +33,7 @@ auto_proxy = false               # env: NETWORKING_AUTO_PROXY
 vpn_source = 2                    # env: NETWORKING_VPN_SOURCE
 
 # Manual Proxy (overrides auto_proxy if set)
- proxy = "http://127.0.0.1:8080"
+ #proxy = "http://127.0.0.1:8080"
 
 # IPv6 Rotation
 # ipv6_block = "2001:db8::/32"     # env: NETWORKING_IPV6_BLOCK
