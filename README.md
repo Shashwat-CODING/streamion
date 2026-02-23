@@ -1,6 +1,6 @@
 # Streamion
 
-**Streamion** is a specialized Invidious-compatible backend service designed to run in environments with restricted network access or where VPN routing is required. It combines a **Go-based WireGuard Proxy** with a **Deno/TypeScript Application** in a single Docker container.
+**Streamion** is a specialized Invidious-compatible based backend service designed to run in environments with restricted network access or where VPN routing is required. It combines a **Go-based WireGuard Proxy** with a **Deno/TypeScript Application** in a single Docker container.
 
 ## Architecture
 
