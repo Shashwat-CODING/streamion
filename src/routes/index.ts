@@ -37,7 +37,12 @@ export const companionRoutes = (
 
     app.use(
         "*",
-        rateLimiter
+        async (c, next) => {
+            if (config.rate_limit.enabled) {
+                return await rateLimiter(c, next);
+            }
+            await next();
+        }
     );
 
     app.use(

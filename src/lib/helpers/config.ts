@@ -60,6 +60,11 @@ export const ConfigSchema = z.object({
             Deno.env.get("CACHE_DIRECTORY") || "/var/tmp",
         ),
     }).strict().default({}),
+    rate_limit: z.object({
+        enabled: z.boolean().default(
+            Deno.env.get("RATE_LIMIT_ENABLED") === "false" ? false : true,
+        ),
+    }).strict().default({}),
     networking: z.object({
         proxy: z.string().nullable().default(Deno.env.get("PROXY") || null),
         auto_proxy: z.boolean().default(
