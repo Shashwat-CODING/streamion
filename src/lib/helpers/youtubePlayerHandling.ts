@@ -85,7 +85,7 @@ export const youtubePlayerParsing = async ({
                     if (
                         videoData.streamingData.formats[index]
                             .signatureCipher !==
-                            undefined
+                        undefined
                     ) {
                         delete videoData.streamingData.formats[index]
                             .signatureCipher;
@@ -95,7 +95,7 @@ export const youtubePlayerParsing = async ({
                             "alr=yes",
                         )
                     ) {
-                        videoData.streamingData.formats[index].url.replace(
+                        videoData.streamingData.formats[index].url = videoData.streamingData.formats[index].url.replace(
                             "alr=yes",
                             "alr=no",
                         );
@@ -116,7 +116,7 @@ export const youtubePlayerParsing = async ({
                     if (
                         videoData.streamingData.adaptiveFormats[index]
                             .signatureCipher !==
-                            undefined
+                        undefined
                     ) {
                         delete videoData.streamingData.adaptiveFormats[index]
                             .signatureCipher;
@@ -125,7 +125,7 @@ export const youtubePlayerParsing = async ({
                         videoData.streamingData.adaptiveFormats[index].url
                             .includes("alr=yes")
                     ) {
-                        videoData.streamingData.adaptiveFormats[index].url
+                        videoData.streamingData.adaptiveFormats[index].url = videoData.streamingData.adaptiveFormats[index].url
                             .replace("alr=yes", "alr=no");
                     } else {
                         videoData.streamingData.adaptiveFormats[index].url +=

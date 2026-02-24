@@ -7,8 +7,11 @@ import {
 import { validateVideoId } from "../../lib/helpers/validateVideoId.ts";
 import { encryptQuery } from "../../lib/helpers/encryptQuery.ts";
 import { TOKEN_MINTER_NOT_READY_MESSAGE } from "../../constants.ts";
+import { YT, YTNodes } from "youtubei.js";
 
 const videos = new Hono();
+
+// ─── Interfaces ──────────────────────────────────────────────────────────────
 
 interface Thumbnail {
     quality: string;
@@ -36,25 +39,23 @@ interface Storyboard {
 }
 
 interface AdaptiveFormat {
-    init?: string;
-    index?: string;
+    init: string;
+    index: string;
     bitrate: string;
     url: string;
     itag: string;
     type: string;
-    clen?: string;
-    lmt?: string;
+    clen: string;
+    lmt: string;
     projectionType: string;
-    fps?: number;
-    size?: string;
-    resolution?: string;
-    qualityLabel?: string;
-    container?: string;
-    encoding?: string;
-    audioQuality?: string;
-    audioSampleRate?: number;
-    audioChannels?: number;
-    colorInfo?: object;
+    container: string;
+    encoding: string;
+    audioQuality: string;
+    audioSampleRate: number;
+    audioChannels: number;
+    resolution: string;
+    qualityLabel: string;
+    quality: string;
 }
 
 interface FormatStream {
@@ -63,18 +64,13 @@ interface FormatStream {
     type: string;
     quality: string;
     bitrate: string;
-    fps?: number;
-    size?: string;
-    resolution?: string;
-    qualityLabel?: string;
-    container?: string;
-    encoding?: string;
-}
-
-interface Caption {
-    label: string;
-    language_code: string;
-    url: string;
+    fps: number;
+    size: string;
+    resolution: string;
+    qualityLabel: string;
+    container: string;
+    encoding: string;
+    clen?: string;
 }
 
 interface RecommendedVideo {
@@ -87,165 +83,135 @@ interface RecommendedVideo {
     authorVerified: boolean;
     lengthSeconds: number;
     viewCountText: string;
-    published?: string;
-    publishedText?: string;
+    published: string;
+    publishedText: string;
 }
 
-// Generate thumbnail URLs for a video
-function generateThumbnails(videoId: string, baseUrl: string): Thumbnail[] {
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function generateThumbnails(videoId: string): Thumbnail[] {
+    const base = "https://i.ytimg.com";
     return [
-        { quality: "maxres", url: `${baseUrl}/vi/${videoId}/maxres.jpg`, width: 1280, height: 720 },
-        { quality: "maxresdefault", url: `${baseUrl}/vi/${videoId}/maxresdefault.jpg`, width: 1280, height: 720 },
-        { quality: "sddefault", url: `${baseUrl}/vi/${videoId}/sddefault.jpg`, width: 640, height: 480 },
-        { quality: "high", url: `${baseUrl}/vi/${videoId}/hqdefault.jpg`, width: 480, height: 360 },
-        { quality: "medium", url: `${baseUrl}/vi/${videoId}/mqdefault.jpg`, width: 320, height: 180 },
-        { quality: "default", url: `${baseUrl}/vi/${videoId}/default.jpg`, width: 120, height: 90 },
-        { quality: "start", url: `${baseUrl}/vi/${videoId}/1.jpg`, width: 120, height: 90 },
-        { quality: "middle", url: `${baseUrl}/vi/${videoId}/2.jpg`, width: 120, height: 90 },
-        { quality: "end", url: `${baseUrl}/vi/${videoId}/3.jpg`, width: 120, height: 90 },
+        { quality: "maxres", url: `${base}/vi/${videoId}/maxresdefault.jpg`, width: 1280, height: 720 },
+        { quality: "maxresdefault", url: `${base}/vi/${videoId}/maxresdefault.jpg`, width: 1280, height: 720 },
+        { quality: "sddefault", url: `${base}/vi/${videoId}/sddefault.jpg`, width: 640, height: 480 },
+        { quality: "high", url: `${base}/vi/${videoId}/hqdefault.jpg`, width: 480, height: 360 },
+        { quality: "medium", url: `${base}/vi/${videoId}/mqdefault.jpg`, width: 320, height: 180 },
+        { quality: "default", url: `${base}/vi/${videoId}/default.jpg`, width: 120, height: 90 },
+        { quality: "start", url: `${base}/vi/${videoId}/1.jpg`, width: 120, height: 90 },
+        { quality: "middle", url: `${base}/vi/${videoId}/2.jpg`, width: 120, height: 90 },
+        { quality: "end", url: `${base}/vi/${videoId}/3.jpg`, width: 120, height: 90 },
     ];
 }
 
-// Parse storyboards from YouTube response
-function parseStoryboards(storyboards: any, videoId: string): Storyboard[] {
+function parseStoryboards(storyboardsRaw: any, videoId: string): Storyboard[] {
     const result: Storyboard[] = [];
-    if (!storyboards) return result;
+    if (!storyboardsRaw?.playerStoryboardSpecRenderer?.spec) return result;
 
-    // Handle PlayerStoryboardSpec format
-    if (storyboards.type === "PlayerStoryboardSpec" && storyboards.boards) {
-        for (const board of storyboards.boards) {
-            if (!board.template_url) continue;
-            result.push({
-                url: `/api/v1/storyboards/${videoId}?width=${board.thumbnail_width}&height=${board.thumbnail_height}`,
-                templateUrl: board.template_url,
-                width: board.thumbnail_width || 0,
-                height: board.thumbnail_height || 0,
-                count: board.thumbnail_count || 0,
-                interval: board.interval || 0,
-                storyboardWidth: board.columns || 0,
-                storyboardHeight: board.rows || 0,
-                storyboardCount: board.storyboard_count || 1,
-            });
-        }
+    const spec = storyboardsRaw.playerStoryboardSpecRenderer.spec as string;
+    const specParts = spec.split("|");
+    const baseUrl = specParts[0];
+
+    for (let i = 3; i < specParts.length; i++) {
+        const parts = specParts[i].split("#");
+        if (parts.length < 8) continue;
+        const [width, height, count, columns, rows, interval, name, sigh] = parts;
+        const storyboardCount = Math.ceil(
+            parseInt(count) / (parseInt(columns) * parseInt(rows)),
+        );
+
+        let templateUrl = baseUrl
+            .replace("$L", String(i - 3))
+            .replace("$N", name) + "$M";
+        if (sigh) templateUrl += "&sigh=" + sigh;
+
+        result.push({
+            url: `/api/v1/storyboards/${videoId}?width=${width}&height=${height}`,
+            templateUrl,
+            width: parseInt(width),
+            height: parseInt(height),
+            count: parseInt(count),
+            interval: parseInt(interval),
+            storyboardWidth: parseInt(columns),
+            storyboardHeight: parseInt(rows),
+            storyboardCount,
+        });
     }
 
     return result;
 }
 
-// Convert YouTube format to Invidious adaptive format
+function mimeToContainerEncoding(mimeType: string): { container: string; encoding: string } {
+    const containerMatch = mimeType?.match(/^(?:video|audio)\/(\w+)/);
+    const encodingMatch = mimeType?.match(/codecs="([^"]+)"/);
+    return {
+        container: containerMatch ? containerMatch[1] : "",
+        encoding: encodingMatch ? encodingMatch[1].split(",")[0].trim() : "",
+    };
+}
+
 function convertAdaptiveFormat(format: any): AdaptiveFormat {
-    const result: AdaptiveFormat = {
-        bitrate: String(format.bitrate || "0"),
-        url: format.url || "",
-        itag: String(format.itag || "0"),
-        type: format.mime_type || "",
-        projectionType: format.projection_type || "RECTANGULAR",
+    const { container, encoding } = mimeToContainerEncoding(format.mimeType);
+    return {
+        init: format.initRange ? `${format.initRange.start}-${format.initRange.end}` : "",
+        index: format.indexRange ? `${format.indexRange.start}-${format.indexRange.end}` : "",
+        bitrate: String(format.bitrate ?? 0),
+        url: format.url ?? "",
+        itag: String(format.itag ?? 0),
+        type: format.mimeType ?? "",
+        clen: format.contentLength ? String(format.contentLength) : "",
+        lmt: format.lastModified ? String(format.lastModified) : "",
+        projectionType: format.projectionType ?? "RECTANGULAR",
+        container,
+        encoding,
+        audioQuality: format.audioQuality ?? "",
+        audioSampleRate: format.audioSampleRate ? parseInt(format.audioSampleRate) : 0,
+        audioChannels: format.audioChannels ?? 0,
+        resolution: format.qualityLabel ?? "",
+        qualityLabel: format.qualityLabel ?? "",
+        quality: format.quality ?? "medium",
     };
-
-    if (format.init_range) {
-        result.init = `${format.init_range.start}-${format.init_range.end}`;
-    }
-    if (format.index_range) {
-        result.index = `${format.index_range.start}-${format.index_range.end}`;
-    }
-    if (format.content_length) result.clen = String(format.content_length);
-    if (format.last_modified) result.lmt = String(format.last_modified);
-    if (format.fps) result.fps = format.fps;
-    if (format.width && format.height) result.size = `${format.width}x${format.height}`;
-    if (format.quality_label) {
-        result.qualityLabel = format.quality_label;
-        result.resolution = format.quality_label;
-    }
-
-    // Parse container and encoding from mime type
-    const mimeMatch = format.mime_type?.match(/^(video|audio)\/(\w+)/);
-    if (mimeMatch) {
-        result.container = mimeMatch[2];
-    }
-
-    const codecMatch = format.mime_type?.match(/codecs="([^"]+)"/);
-    if (codecMatch) {
-        result.encoding = codecMatch[1].split(",")[0].trim();
-    }
-
-    if (format.audio_quality) result.audioQuality = format.audio_quality;
-    if (format.audio_sample_rate) result.audioSampleRate = parseInt(format.audio_sample_rate);
-    if (format.audio_channels) result.audioChannels = format.audio_channels;
-    if (format.color_info) result.colorInfo = format.color_info;
-
-    return result;
 }
 
-// Convert YouTube format to Invidious format stream (combined video+audio)
 function convertFormatStream(format: any): FormatStream {
-    const result: FormatStream = {
-        url: format.url || "",
-        itag: String(format.itag || "0"),
-        type: format.mime_type || "",
-        quality: format.quality || "medium",
-        bitrate: String(format.bitrate || "0"),
+    const { container, encoding } = mimeToContainerEncoding(format.mimeType);
+    return {
+        url: format.url ?? "",
+        itag: String(format.itag ?? 0),
+        type: format.mimeType ?? "",
+        quality: format.quality ?? "medium",
+        bitrate: String(format.bitrate ?? 0),
+        fps: format.fps ?? 0,
+        size: format.width && format.height ? `${format.width}x${format.height}` : "",
+        resolution: format.qualityLabel ?? "",
+        qualityLabel: format.qualityLabel ?? "",
+        container,
+        encoding,
+        clen: format.contentLength ? String(format.contentLength) : "",
     };
-
-    if (format.fps) result.fps = format.fps;
-    if (format.width && format.height) result.size = `${format.width}x${format.height}`;
-    if (format.quality_label) {
-        result.qualityLabel = format.quality_label;
-        result.resolution = format.quality_label;
-    }
-
-    const mimeMatch = format.mime_type?.match(/^video\/(\w+)/);
-    if (mimeMatch) {
-        result.container = mimeMatch[1];
-    }
-
-    const codecMatch = format.mime_type?.match(/codecs="([^"]+)"/);
-    if (codecMatch) {
-        result.encoding = codecMatch[1].split(",")[0].trim();
-    }
-
-    return result;
 }
 
-// Convert description to HTML with links
 function descriptionToHtml(description: string): string {
     if (!description) return "";
-
-    // Escape HTML entities
     let html = description
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
-
-    // Convert URLs to links
     html = html.replace(
         /(https?:\/\/[^\s]+)/g,
-        (url) => {
-            const displayUrl = url.replace(/^https?:\/\//, "");
-            return `<a href="${url}">${displayUrl}</a>`;
-        }
+        (url) => `<a href="${url}">${url.replace(/^https?:\/\//, "")}</a>`,
     );
-
-    // Convert hashtags to links
-    html = html.replace(
-        /#(\w+)/g,
-        '<a href="/hashtag/$1">#$1</a>'
-    );
-
+    html = html.replace(/#(\w+)/g, '<a href="/hashtag/$1">#$1</a>');
     return html;
 }
 
-// Calculate relative time string
 function getRelativeTimeString(date: Date): string {
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffSeconds = Math.floor(diffMs / 1000);
-    const diffMinutes = Math.floor(diffSeconds / 60);
-    const diffHours = Math.floor(diffMinutes / 60);
-    const diffDays = Math.floor(diffHours / 24);
-    const diffWeeks = Math.floor(diffDays / 7);
-    const diffMonths = Math.floor(diffDays / 30);
+    const diffDays = Math.floor((Date.now() - date.getTime()) / 86400000);
     const diffYears = Math.floor(diffDays / 365);
-
+    const diffMonths = Math.floor(diffDays / 30);
+    const diffWeeks = Math.floor(diffDays / 7);
+    const diffHours = Math.floor((Date.now() - date.getTime()) / 3600000);
+    const diffMinutes = Math.floor((Date.now() - date.getTime()) / 60000);
     if (diffYears > 0) return `${diffYears} year${diffYears > 1 ? "s" : ""} ago`;
     if (diffMonths > 0) return `${diffMonths} month${diffMonths > 1 ? "s" : ""} ago`;
     if (diffWeeks > 0) return `${diffWeeks} week${diffWeeks > 1 ? "s" : ""} ago`;
@@ -255,7 +221,6 @@ function getRelativeTimeString(date: Date): string {
     return "just now";
 }
 
-// Localize URL to route through local server
 function localizeUrl(url: string, config: any): string {
     if (!url) return url;
     try {
@@ -265,15 +230,12 @@ function localizeUrl(url: string, config: any): string {
 
         if (config.server.encrypt_query_params) {
             const publicParams = [...queryParams].filter(([key]) =>
-                ["pot", "ip"].includes(key) === false
+                !["pot", "ip"].includes(key)
             );
             const privateParams = [...queryParams].filter(([key]) =>
-                ["pot", "ip"].includes(key) === true
+                ["pot", "ip"].includes(key)
             );
-            const encryptedParams = encryptQuery(
-                JSON.stringify(privateParams),
-                config,
-            );
+            const encryptedParams = encryptQuery(JSON.stringify(privateParams), config);
             queryParams = new URLSearchParams(publicParams);
             queryParams.set("enc", "true");
             queryParams.set("data", encryptedParams);
@@ -284,6 +246,186 @@ function localizeUrl(url: string, config: any): string {
         return url;
     }
 }
+
+/**
+ * Helper to convert duration string (e.g., "3:42", "1:05:20") to seconds.
+ */
+function durationToSeconds(text: string): number {
+    if (!text) return 0;
+    const parts = text.split(":").map(Number);
+    if (parts.some(isNaN)) return 0;
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return parts[0];
+}
+
+/**
+ * Extract recommended/related videos from VideoInfo.watch_next_feed.
+ * Handles CompactVideo, LockupView, and generic nodes with video_id.
+ */
+function extractRecommendedVideos(videoInfo: YT.VideoInfo): RecommendedVideo[] {
+    const feed = videoInfo.watch_next_feed;
+    if (!feed || feed.length === 0) return [];
+
+    const results: RecommendedVideo[] = [];
+
+    for (const item of feed) {
+        const raw = item as any;
+
+        // ── Strategy 1: proper CompactVideo node ──────────────────────────
+        if (item.is(YTNodes.CompactVideo)) {
+            const vid = item as YTNodes.CompactVideo;
+            const vidId = vid.id ?? "";
+            if (!vidId) continue;
+
+            const thumbs: Thumbnail[] = (vid.thumbnails ?? []).map(
+                (t: any, idx: number) => ({
+                    quality: idx === 0 ? "high" : idx === 1 ? "medium" : "default",
+                    url: t.url ?? "",
+                    width: t.width ?? 0,
+                    height: t.height ?? 0,
+                }),
+            );
+            const publishedText: string = (vid as any).published?.text ?? "";
+            results.push({
+                videoId: vidId,
+                title: vid.title?.text ?? "",
+                videoThumbnails: thumbs.length > 0 ? thumbs : generateThumbnails(vidId),
+                author: vid.author?.name ?? "",
+                authorUrl: `/channel/${vid.author?.id ?? ""}`,
+                authorId: vid.author?.id ?? "",
+                authorVerified: (vid.author as any)?.is_verified ?? false,
+                lengthSeconds: vid.duration?.seconds ?? 0,
+                viewCountText: (vid.short_view_count as any)?.text ?? (vid as any).view_count?.text ?? "",
+                published: publishedText,
+                publishedText,
+            });
+            continue;
+        }
+
+        // ── Strategy 2: LockupView node ───────────────────────────────────
+        if (item.type === "LockupView") {
+            const vidId = raw.content_id;
+            if (!vidId) continue;
+
+            const title = raw.metadata?.title?.text ?? "";
+            const thumbs: Thumbnail[] = (raw.content_image?.image ?? []).map(
+                (t: any, idx: number) => ({
+                    quality: idx === 0 ? "high" : idx === 1 ? "medium" : "default",
+                    url: t.url ?? "",
+                    width: t.width ?? 0,
+                    height: t.height ?? 0,
+                }),
+            );
+
+            // Duration from overlay badge (e.g. "3:42")
+            let durationText = "";
+            const overlays = raw.content_image?.overlays || [];
+            for (const overlay of overlays) {
+                if (overlay.badges) {
+                    for (const badge of overlay.badges) {
+                        if (badge.text) {
+                            durationText = badge.text;
+                            break;
+                        }
+                    }
+                }
+            }
+            const lengthSeconds = durationToSeconds(durationText);
+
+            // Metadata rows: [0] = Author, [1] = Views & Published
+            const rows = raw.metadata?.metadata?.metadata_rows || [];
+            const author = rows[0]?.metadata_parts?.[0]?.text?.text ?? "";
+
+            // Author ID from avatar navigation endpoint
+            const authorId = raw.metadata?.image?.renderer_context?.command_context?.on_tap?.payload?.browseId ?? "";
+
+            const viewCountText = rows[1]?.metadata_parts?.[0]?.text?.text ?? "";
+            const publishedText = rows[1]?.metadata_parts?.[1]?.text?.text ?? "";
+
+            results.push({
+                videoId: vidId,
+                title,
+                videoThumbnails: thumbs.length > 0 ? thumbs : generateThumbnails(vidId),
+                author,
+                authorUrl: authorId ? `/channel/${authorId}` : "",
+                authorId,
+                authorVerified: false, // LockupView verification status is tricky, assume false or check badge
+                lengthSeconds,
+                viewCountText,
+                published: publishedText,
+                publishedText,
+            });
+            continue;
+        }
+
+        // ── Strategy 3: generic fallback (any node with video_id) ─────────
+        const vidId: string =
+            raw.video_id ??
+            raw.videoId ??
+            raw.id ??
+            raw.content?.video_id ??
+            raw.content?.id ??
+            "";
+        if (!vidId || !/^[a-zA-Z0-9_-]{11}$/.test(vidId)) continue;
+
+        // Try to extract thumbnail, title, author from wherever they may be
+        const rawThumbs: any[] =
+            raw.thumbnails ??
+            raw.thumbnail?.thumbnails ??
+            raw.content?.thumbnail?.thumbnails ??
+            [];
+
+        const thumbs: Thumbnail[] = rawThumbs.length > 0
+            ? rawThumbs.map((t: any, idx: number) => ({
+                quality: idx === 0 ? "high" : idx === 1 ? "medium" : "default",
+                url: t.url ?? "",
+                width: t.width ?? 0,
+                height: t.height ?? 0,
+            }))
+            : generateThumbnails(vidId);
+
+        const title: string =
+            raw.title?.text ??
+            raw.title ??
+            raw.content?.title?.text ??
+            raw.headline?.text ??
+            "";
+        const author: string =
+            raw.author?.name ??
+            raw.author ??
+            raw.short_byline_text?.runs?.[0]?.text ??
+            "";
+        const authorId: string =
+            raw.author?.id ??
+            raw.channel_id ??
+            raw.short_byline_text?.runs?.[0]?.navigationEndpoint?.browseEndpoint?.browseId ??
+            "";
+        const publishedText: string =
+            raw.published?.text ??
+            raw.published_time_text?.simpleText ??
+            "";
+
+        results.push({
+            videoId: vidId,
+            title,
+            videoThumbnails: thumbs,
+            author,
+            authorUrl: authorId ? `/channel/${authorId}` : "",
+            authorId,
+            authorVerified: raw.author?.is_verified ?? false,
+            lengthSeconds: raw.duration?.seconds ?? raw.length_seconds ?? 0,
+            viewCountText: raw.short_view_count?.text ?? raw.view_count?.text ?? "",
+            published: publishedText,
+            publishedText,
+        });
+    }
+
+    return results;
+}
+
+
+// ─── Route ───────────────────────────────────────────────────────────────────
 
 videos.get("/:videoId", async (c) => {
     const videoId = c.req.param("videoId");
@@ -308,13 +450,13 @@ videos.get("/:videoId", async (c) => {
     const metrics = c.get("metrics");
     const tokenMinter = c.get("tokenMinter");
 
-    // Check if tokenMinter is ready (only needed when PO token is enabled)
     if (config.jobs.youtube_session.po_token_enabled && !tokenMinter) {
         throw new HTTPException(503, {
             res: new Response(JSON.stringify({ error: TOKEN_MINTER_NOT_READY_MESSAGE })),
         });
     }
 
+    // Fetch player data (cached, deciphered)
     const youtubePlayerResponseJson = await youtubePlayerParsing({
         innertubeClient,
         videoId,
@@ -323,6 +465,7 @@ videos.get("/:videoId", async (c) => {
         metrics,
     }) as any;
 
+    // Build VideoInfo from cached player response (for streaming_data / basic_info / captions)
     const videoInfo = youtubeVideoInfo(innertubeClient, youtubePlayerResponseJson);
 
     if (videoInfo.playability_status?.status !== "OK") {
@@ -334,286 +477,125 @@ videos.get("/:videoId", async (c) => {
         });
     }
 
-    // Get the request origin for thumbnail URLs
-    const origin = new URL(c.req.url).origin;
-    const thumbnailBaseUrl = origin;
+    // Fetch next (watch page) to get related videos — this is a lightweight call
+    let fullVideoInfo: YT.VideoInfo | null = null;
+    try {
+        fullVideoInfo = await innertubeClient.getInfo(videoId);
+    } catch (_) {
+        // If this fails, we continue without related videos
+    }
 
-    // Build video details
-    const details = videoInfo.basic_info;
-    const streamingData = videoInfo.streaming_data;
+    // ── Raw YouTube fields ──────────────────────────────────────────────────
+    const videoDetails = youtubePlayerResponseJson.videoDetails ?? {};
+    const microformat = youtubePlayerResponseJson.microformat?.playerMicroformatRenderer ?? {};
+    const streamingDataRaw = youtubePlayerResponseJson.streamingData ?? {};
+    const captionsRaw = youtubePlayerResponseJson.captions ?? {};
+    const storyboardsRaw = youtubePlayerResponseJson.storyboards ?? {};
+    const playabilityStatus = youtubePlayerResponseJson.playabilityStatus ?? {};
 
-    // Parse publish date
+    // ── Published date ──────────────────────────────────────────────────────
     let publishedTimestamp = 0;
     let publishedText = "";
-    if (youtubePlayerResponseJson.microformat?.playerMicroformatRenderer?.publishDate) {
-        const publishDate = new Date(youtubePlayerResponseJson.microformat.playerMicroformatRenderer.publishDate);
+    if (microformat.publishDate) {
+        const publishDate = new Date(microformat.publishDate);
         publishedTimestamp = Math.floor(publishDate.getTime() / 1000);
         publishedText = getRelativeTimeString(publishDate);
     }
 
-    // Build adaptive formats
-    const adaptiveFormats: AdaptiveFormat[] = [];
-    if (streamingData?.adaptive_formats) {
-        for (const format of streamingData.adaptive_formats) {
-            const converted = convertAdaptiveFormat(format);
-            if (local) {
-                converted.url = localizeUrl(converted.url, config);
-            }
-            adaptiveFormats.push(converted);
-        }
-    }
+    // ── Thumbnails ──────────────────────────────────────────────────────────
+    const videoThumbnails: Thumbnail[] = generateThumbnails(videoId);
 
-    // Build format streams (combined video+audio)
-    const formatStreams: FormatStream[] = [];
-    if (streamingData?.formats) {
-        for (const format of streamingData.formats) {
-            const converted = convertFormatStream(format);
-            if (local) {
-                converted.url = localizeUrl(converted.url, config);
-            }
-            formatStreams.push(converted);
-        }
-    }
+    // ── Storyboards ─────────────────────────────────────────────────────────
+    const storyboards: Storyboard[] = parseStoryboards(storyboardsRaw, videoId);
 
-    // Build captions
-    const captions: Caption[] = [];
-    if (videoInfo.captions?.caption_tracks) {
-        for (const track of videoInfo.captions.caption_tracks) {
-            captions.push({
-                label: track.name?.text || track.language_code || "Unknown",
-                language_code: track.language_code || "en",
-                url: `/api/v1/captions/${videoId}?label=${encodeURIComponent(track.name?.text || track.language_code || "")}`,
-            });
-        }
-    }
+    // ── Author thumbnails ────────────────────────────────────────────────────
+    const authorThumbnails: AuthorThumbnail[] = [32, 48, 76, 100, 176, 512].map((sz) => ({
+        url: `https://yt3.ggpht.com/a/default-user=s${sz}-c-k-c0x00ffffff-no-rj`,
+        width: sz,
+        height: sz,
+    }));
 
-    // Build recommended videos
-    const recommendedVideos: RecommendedVideo[] = [];
-    // Note: Related videos require a separate API call to /next endpoint
-    // For now, we return an empty array - this can be enhanced later
-
-    // Build author thumbnails from raw YouTube response
-    const authorThumbnails: AuthorThumbnail[] = [];
-    const channelThumbnails = youtubePlayerResponseJson.videoDetails?.author?.thumbnail?.thumbnails ||
-        youtubePlayerResponseJson.microformat?.playerMicroformatRenderer?.ownerProfileUrl ? [] : [];
-
-    // Generate standard author thumbnail sizes if we have the channel ID
-    if (details.channel_id) {
-        const sizes = [32, 48, 76, 100, 176, 512];
-        for (const size of sizes) {
-            authorThumbnails.push({
-                url: `https://yt3.ggpht.com/a/default-user=s${size}-c-k-c0x00ffffff-no-rj`,
-                width: size,
-                height: size,
-            });
-        }
-    }
-
-    // Get raw YouTube response data
-    const videoDetails = (youtubePlayerResponseJson as any).videoDetails || {};
-    const microformat = (youtubePlayerResponseJson as any).microformat?.playerMicroformatRenderer || {};
-    const playabilityStatus = (youtubePlayerResponseJson as any).playabilityStatus || {};
-    const streamingDataRaw = (youtubePlayerResponseJson as any).streamingData || {};
-    const captionsRaw = (youtubePlayerResponseJson as any).captions || {};
-    const storyboardsRaw = (youtubePlayerResponseJson as any).storyboards || {};
-
-    // Map thumbnails directly from videoDetails
-    const thumbnailArray = [];
-    if (videoDetails.thumbnail?.thumbnails) {
-        for (const thumb of videoDetails.thumbnail.thumbnails) {
-            thumbnailArray.push({
-                url: thumb.url,
-                width: thumb.width,
-                height: thumb.height,
-            });
-        }
-    }
-
-    // Map storyboards directly from API response
-    const storyboardsArray = [];
-    if (storyboardsRaw.playerStoryboardSpecRenderer?.spec) {
-        const spec = storyboardsRaw.playerStoryboardSpecRenderer.spec;
-        const specParts = spec.split('|');
-
-        for (let i = 3; i < specParts.length; i++) {
-            const parts = specParts[i].split('#');
-            if (parts.length >= 8) {
-                const baseUrl = specParts[0];
-                const [width, height, count, columns, rows, interval, name, sigh] = parts;
-                const storyboardCount = Math.ceil(parseInt(count) / (parseInt(columns) * parseInt(rows)));
-
-                const urls = [];
-                for (let j = 0; j < storyboardCount; j++) {
-                    let url = baseUrl.replace('$L', i - 3).replace('$N', name) + j;
-                    if (sigh) url += '&sigh=' + sigh;
-                    urls.push(url);
-                }
-
-                storyboardsArray.push({
-                    width: width,
-                    height: height,
-                    thumbsCount: count,
-                    columns: columns,
-                    rows: rows,
-                    interval: interval,
-                    storyboardCount: storyboardCount,
-                    url: urls,
-                });
-            }
-        }
-    }
-
-    // Map captions directly from API response
-    const captionTracks = [];
-    if (captionsRaw.playerCaptionsTracklistRenderer?.captionTracks) {
-        for (const track of captionsRaw.playerCaptionsTracklistRenderer.captionTracks) {
-            captionTracks.push({
-                baseUrl: track.baseUrl,
-                name: track.name?.simpleText || track.languageCode,
-                vssId: track.vssId || "",
-                languageCode: track.languageCode,
-                isTranslatable: track.isTranslatable ?? true,
-            });
-        }
-    }
-
-    // Map audioTracks directly from API response
-    const audioTracks = [];
-    if (captionsRaw.playerCaptionsTracklistRenderer?.audioTracks) {
-        for (const track of captionsRaw.playerCaptionsTracklistRenderer.audioTracks) {
-            audioTracks.push({
-                languageName: track.displayName || track.id,
-                languageCode: track.id,
-            });
-        }
-    } else if (captionsRaw.playerCaptionsTracklistRenderer?.captionTracks) {
-        // Fallback: extract unique languages from caption tracks
-        const uniqueLangs = new Set();
-        for (const track of captionsRaw.playerCaptionsTracklistRenderer.captionTracks) {
-            const langCode = track.languageCode;
-            if (!uniqueLangs.has(langCode)) {
-                uniqueLangs.add(langCode);
-                audioTracks.push({
-                    languageName: track.name?.simpleText || langCode,
-                    languageCode: langCode,
-                });
-            }
-        }
-    }
-
-    // Map formats directly from streamingData
-    const formatsArray = [];
-    if (streamingDataRaw.formats) {
-        for (const format of streamingDataRaw.formats) {
-            const formatObj: any = {
-                itag: format.itag,
-                url: format.url,
-                mimeType: format.mimeType,
-                bitrate: format.bitrate,
-                width: format.width || 0,
-                height: format.height || 0,
-                lastModified: format.lastModified,
-                contentLength: format.contentLength,
-                quality: format.quality,
-                fps: format.fps,
-                qualityLabel: format.qualityLabel,
-                projectionType: format.projectionType || "RECTANGULAR",
-                averageBitrate: format.averageBitrate,
-                approxDurationMs: format.approxDurationMs,
-            };
-
-            if (format.audioQuality) formatObj.audioQuality = format.audioQuality;
-            if (format.audioSampleRate) formatObj.audioSampleRate = format.audioSampleRate;
-            if (format.audioChannels) formatObj.audioChannels = format.audioChannels;
-            if (format.qualityLabel) {
-                formatObj.qualityOrdinal = "QUALITY_ORDINAL_" + format.qualityLabel.replace(/\d+/, "").replace('p', 'P');
-            }
-
-            formatsArray.push(formatObj);
-        }
-    }
-
-    // Map adaptiveFormats directly from streamingData
-    const adaptiveFormatsArray = [];
-    if (streamingDataRaw.adaptiveFormats) {
-        for (const format of streamingDataRaw.adaptiveFormats) {
-            const adaptiveFormat: any = {
-                itag: format.itag,
-                url: format.url,
-                mimeType: format.mimeType,
-                bitrate: format.bitrate,
-                width: format.width || 0,
-                height: format.height || 0,
-                lastModified: format.lastModified,
-                contentLength: format.contentLength,
-                quality: format.quality,
-                fps: format.fps,
-                qualityLabel: format.qualityLabel,
-                projectionType: format.projectionType || "RECTANGULAR",
-                averageBitrate: format.averageBitrate,
-                approxDurationMs: format.approxDurationMs,
-            };
-
-            if (format.initRange) {
-                adaptiveFormat.initRange = {
-                    start: format.initRange.start,
-                    end: format.initRange.end,
-                };
-            }
-            if (format.indexRange) {
-                adaptiveFormat.indexRange = {
-                    start: format.indexRange.start,
-                    end: format.indexRange.end,
-                };
-            }
-
-            if (format.audioQuality) adaptiveFormat.audioQuality = format.audioQuality;
-            if (format.audioSampleRate) adaptiveFormat.audioSampleRate = format.audioSampleRate;
-            if (format.audioChannels) adaptiveFormat.audioChannels = format.audioChannels;
-            if (format.colorInfo) adaptiveFormat.colorInfo = format.colorInfo;
-            if (format.highReplication) adaptiveFormat.highReplication = format.highReplication;
-            if (format.loudnessDb !== undefined) adaptiveFormat.loudnessDb = format.loudnessDb;
-
-            if (format.qualityLabel) {
-                adaptiveFormat.qualityOrdinal = "QUALITY_ORDINAL_" + format.qualityLabel.replace(/\d+/, "").replace('p', 'P');
-            } else {
-                adaptiveFormat.qualityOrdinal = "QUALITY_ORDINAL_UNKNOWN";
-            }
-
-            adaptiveFormatsArray.push(adaptiveFormat);
-        }
-    }
-
-    const currentTimestamp = Math.floor(Date.now() / 1000);
-
-    const response = {
-        status: playabilityStatus.status || "OK",
-        id: videoDetails.videoId || videoId,
-        title: videoDetails.title || "",
-        lengthSeconds: videoDetails.lengthSeconds || "0",
-        keywords: videoDetails.keywords || [],
-        channelTitle: videoDetails.author || "",
-        channelId: videoDetails.channelId || "",
-        description: videoDetails.shortDescription || "",
-        thumbnail: thumbnailArray,
-        allowRatings: videoDetails.allowRatings ?? true,
-        viewCount: videoDetails.viewCount || "0",
-        isPrivate: videoDetails.isPrivate || false,
-        isUnpluggedCorpus: videoDetails.isUnpluggedCorpus || false,
-        isLiveContent: videoDetails.isLiveContent || false,
-        storyboards: storyboardsArray,
-        captions: {
-            captionTracks: captionTracks,
+    // ── Adaptive formats ─────────────────────────────────────────────────────
+    const adaptiveFormats: AdaptiveFormat[] = (streamingDataRaw.adaptiveFormats ?? []).map(
+        (f: any) => {
+            const fmt = convertAdaptiveFormat(f);
+            return fmt;
         },
-        audioTracks: audioTracks,
-        defaultVideoLanguage: microformat.defaultLanguage || "English",
-        defaultVideoLanguageCode: microformat.defaultLanguage || "en",
-        fetchedTS: currentTimestamp,
-        expiresInSeconds: streamingDataRaw.expiresInSeconds || "21540",
-        formats: formatsArray,
-        isGCR: false,
-        adaptiveFormats: adaptiveFormatsArray,
-        availableAt: currentTimestamp,
+    );
+
+    // ── Format streams ────────────────────────────────────────────────────────
+    const formatStreams: FormatStream[] = (streamingDataRaw.formats ?? []).map((f: any) => {
+        const fmt = convertFormatStream(f);
+        return fmt;
+    });
+
+    // ── Captions ──────────────────────────────────────────────────────────────
+    const captions: any[] = (
+        captionsRaw.playerCaptionsTracklistRenderer?.captionTracks ?? []
+    ).map((track: any) => ({
+        label: track.name?.simpleText ?? track.languageCode,
+        language_code: track.languageCode,
+        url: `/api/v1/captions/${videoId}?label=${encodeURIComponent(
+            track.name?.simpleText ?? track.languageCode ?? "",
+        )}`,
+    }));
+
+    // ── Recommended videos ─────────────────────────────────────────────────
+    const recommendedVideos: RecommendedVideo[] = fullVideoInfo
+        ? extractRecommendedVideos(fullVideoInfo)
+        : [];
+
+    // ── DASH manifest URL ──────────────────────────────────────────────────
+    const dashUrl = `/api/manifest/dash/id/${videoId}`;
+
+    // ── Genre / family safe ────────────────────────────────────────────────
+    const genre: string = microformat.category ?? "";
+    const isFamilyFriendly: boolean = microformat.isFamilySafe ?? true;
+    const allowedRegions: string[] = microformat.availableCountries ?? [];
+
+    // ── Sub count ─────────────────────────────────────────────────────────
+    const subCountText: string =
+        (fullVideoInfo as any)?.secondary_info?.owner?.subscriber_count?.text ?? "";
+
+    // ── Build final Invidious-compatible response ──────────────────────────
+    const response = {
+        type: "video",
+        title: videoDetails.title ?? "",
+        videoId: videoDetails.videoId ?? videoId,
+        videoThumbnails,
+        storyboards,
+        description: videoDetails.shortDescription ?? "",
+        descriptionHtml: descriptionToHtml(videoDetails.shortDescription ?? ""),
+        published: publishedTimestamp,
+        publishedText,
+        keywords: videoDetails.keywords ?? [],
+        viewCount: parseInt(videoDetails.viewCount ?? "0"),
+        likeCount: 0,
+        dislikeCount: 0,
+        paid: false,
+        premium: false,
+        isFamilyFriendly,
+        allowedRegions,
+        genre,
+        genreUrl: null,
+        author: videoDetails.author ?? "",
+        authorId: videoDetails.channelId ?? "",
+        authorUrl: `/channel/${videoDetails.channelId ?? ""}`,
+        authorVerified: false,
+        authorThumbnails,
+        subCountText,
+        lengthSeconds: parseInt(videoDetails.lengthSeconds ?? "0"),
+        allowRatings: videoDetails.allowRatings ?? true,
+        rating: 0,
+        isListed: !(videoDetails.isPrivate ?? false),
+        liveNow: videoDetails.isLiveContent ?? false,
+        isPostLiveDvr: playabilityStatus.status === "OK" && (videoDetails.isLiveContent ?? false),
+        isUpcoming: playabilityStatus.status === "LIVE_STREAM_OFFLINE",
+        dashUrl,
+        adaptiveFormats,
+        formatStreams,
+        captions,
+        recommendedVideos,
     };
 
     return c.json(response);
