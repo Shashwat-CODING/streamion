@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { bearerAuth } from "hono/bearer-auth";
+import { cache } from "hono/cache";
+import { rateLimiter } from "../lib/middlewares/rateLimiter.ts";
 
 import youtubeApiPlayer from "./youtube_api_routes/player.ts";
 import invidiousRouteLatestVersion from "./invidious_routes/latestVersion.ts";
@@ -32,6 +34,19 @@ export const companionRoutes = (
     } else {
         app.use("*", logger());
     }
+
+    app.use(
+        "*",
+        rateLimiter
+    );
+
+    app.use(
+        "/api/*",
+        cache({
+            cacheName: "streamion-api-cache",
+            cacheControl: "max-age=3600",
+        })
+    );
 
     app.use(
         "/youtubei/v1/*",
