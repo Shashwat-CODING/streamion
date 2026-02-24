@@ -42,10 +42,17 @@ export const companionRoutes = (
 
     app.use(
         "/api/*",
-        cache({
-            cacheName: "streamion-api-cache",
-            cacheControl: "max-age=3600",
-        })
+        async (c, next) => {
+            // Only apply cache if enabled in config
+            if (config.cache.enabled) {
+                return await cache({
+                    cacheName: "streamion-api-cache",
+                    cacheControl: "max-age=3600",
+                    wait: true, // Required for Deno compatibility 
+                })(c, next);
+            }
+            await next();
+        }
     );
 
     app.use(
