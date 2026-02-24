@@ -64,8 +64,55 @@ export const getFetchClient = (config: Config): {
                 method: init?.method,
                 body: init?.body,
             });
-            client.close(); // Important: close client to avoid leaking resources
-            return new Response(fetchRes.body, {
+
+            if (!fetchRes.body) {
+                client.close();
+                return new Response(null, {
+                    status: fetchRes.status,
+                    headers: fetchRes.headers,
+                });
+            }
+
+            const originalBody = fetchRes.body;
+            let streamFinished = false;
+            const finalizeClient = () => {
+                if (!streamFinished) {
+                    streamFinished = true;
+                    try {
+                        client.close();
+                    } catch { }
+                }
+            };
+
+            const newBody = new ReadableStream({
+                async start(controller) {
+                    const reader = originalBody.getReader();
+                    try {
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            controller.enqueue(value);
+                        }
+                        controller.close();
+                    } catch (e: any) {
+                        console.error("[getFetchClient] Error reading stream:", e?.message || e);
+                        controller.error(e);
+                        // Rotate proxy asynchronously if stream dies and auto_proxy is enabled
+                        if (config.networking.auto_proxy) {
+                            import("./proxyManager.ts").then(m => m.markProxyFailed()).catch(() => { });
+                        }
+                    } finally {
+                        reader.releaseLock();
+                        finalizeClient();
+                    }
+                },
+                cancel(reason) {
+                    originalBody.cancel(reason).catch(() => { });
+                    finalizeClient();
+                }
+            });
+
+            return new Response(newBody, {
                 status: fetchRes.status,
                 headers: fetchRes.headers,
             });
