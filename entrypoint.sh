@@ -29,8 +29,7 @@ SERVER_PID=$!
 
 # Wait for proxy to start
 echo "[ENTRYPOINT] Waiting for proxy to be ready on port 8080..."
-# Simplified health check: just check if the port is open and returns *something*
-while ! curl -s --fail http://127.0.0.1:8080/ > /dev/null; do
+while ! curl -v http://127.0.0.1:8080/ 2>&1 | grep "Proxy Running"; do
     if ! kill -0 $SERVER_PID 2>/dev/null; then
         echo "[FATAL] Server process exited unexpectedly!"
         wait $SERVER_PID
@@ -43,29 +42,9 @@ echo "[ENTRYPOINT] Proxy is ready!"
 
 # Start Proxy Check
 echo "[ENTRYPOINT] Checking proxy connection..."
-curl -s -x http://127.0.0.1:8080 https://cloudflare.com/cdn-cgi/trace || echo "[WARN] Proxy check failed, but continuing..."
+curl -s -x http://127.0.0.1:8080 https://cloudflare.com/cdn-cgi/trace
 echo ""
 echo "[ENTRYPOINT] Proxy check complete."
-
-# Start Cloudflare Tunnel in background (waits for Deno app)
-(
-    echo "[TUNNEL] Background tunnel manager started"
-    # Wait for the Deno app to be ready on port 8000
-    while ! curl -s --fail http://127.0.0.1:8000/ > /dev/null; do
-        echo "[TUNNEL] Waiting for Streamion (port 8000) to be ready..."
-        sleep 2
-    done
-    echo "[TUNNEL] Streamion is ready! Launching Cloudflare Tunnel..."
-
-if [[ -n "${TUNNEL_TOKEN}" ]]; then
-    echo "[TUNNEL] Starting Cloudflare Tunnel with provided token..."
-    exec cloudflared tunnel --no-autoupdate run --token "${TUNNEL_TOKEN}"
-else
-    echo "[TUNNEL] Starting Cloudflare Quick Tunnel (random domain)..."
-    exec cloudflared tunnel --no-autoupdate --url http://localhost:8000
-    
-    fi
-) &
 
 # Start Streamion
 echo "[ENTRYPOINT] Starting Streamion..."

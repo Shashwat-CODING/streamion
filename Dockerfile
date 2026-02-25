@@ -1,66 +1,64 @@
-FROM golang:bookworm as builder
-WORKDIR /go/src
-EXPOSE 8080
-
-# Install git first as it is required for go mod tidy
-RUN apt-get update && apt-get install -y git build-essential
-
-# Copy everything first
-COPY go.mod go.sum ./
-COPY warp.go server.go ./
-
-# Resolution ambiguity fix: Explicitly fetch the main module and tidy
-RUN go mod download && go mod tidy
-
-# Build binaries
-RUN CGO_ENABLED=0 GOOS=linux \
-    go build -a -installsuffix cgo -ldflags '-s' -o warp warp.go && \
-    go build -a -installsuffix cgo -ldflags '-s' -o server server.go
-
 FROM ubuntu:22.04
 
-# Copy binaries
-COPY --from=builder /go/src/warp /usr/local/bin/
-COPY --from=builder /go/src/server /usr/local/bin/
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+# Expose proxy port
+EXPOSE 8080
 
-COPY entrypoint.sh   /usr/local/bin/
+# Configure Go env
+ENV GO_VERSION=1.21.6
+ENV PATH=$PATH:/usr/local/go/bin:/root/go/bin
 
-# Install dependencies and Deno
+# Install runtime dependencies, Deno, and Go
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     curl \
     ca-certificates \
     unzip \
     ffmpeg \
+    git \
+    build-essential \
     && rm -rf /var/lib/apt/lists/* \
+    # Install Go
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o go.tar.gz \
+    && tar -C /usr/local -xzf go.tar.gz \
+    && rm go.tar.gz \
+    # Install Deno
     && curl -fsSL https://deno.land/x/install/install.sh | sh \
-    && mv /root/.deno/bin/deno /usr/local/bin/deno \
-    # Install cloudflared
-    && curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared \
-    && chmod +x /usr/local/bin/cloudflared \
-    && chmod +x /usr/local/bin/entrypoint.sh
+    && mv /root/.deno/bin/deno /usr/local/bin/deno
 
-# Copy Deno App
+# Set Go workdir
+WORKDIR /go/src
+
+# Copy over Go files
+COPY go.mod go.sum ./
+COPY warp.go server.go ./
+
+# Download dependencies and build the proxy binaries
+RUN go mod download && go mod tidy \
+    && CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-s' -o /usr/local/bin/warp warp.go \
+    && CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-s' -o /usr/local/bin/server server.go
+
+# Copy App files
 WORKDIR /app
+COPY entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 COPY deno.json deno.lock compile.env grafana_dashboard.json ./
 COPY config ./config
 COPY src ./src
 
-ENV         DAEMON_MODE                     false
-ENV         PROXY_UP                        ""
-ENV         PROXY_PORT                      "8080"
-ENV         PROXY_USER                      ""
-ENV         PROXY_PASS                      ""
-ENV         QUICK_TUNNEL                    "false"
-ENV         TUNNEL_TOKEN                    ""
-ENV         WIREGUARD_UP                    ""
-ENV         WIREGUARD_CONFIG                ""
-ENV         WIREGUARD_INTERFACE_PRIVATE_KEY ""
-ENV         WIREGUARD_INTERFACE_DNS         "1.1.1.1"
-ENV         WIREGUARD_INTERFACE_ADDRESS     ""
-ENV         WIREGUARD_PEER_PUBLIC_KEY       ""
-ENV         WIREGUARD_PEER_ALLOWED_IPS      "0.0.0.0/0"
-ENV         WIREGUARD_PEER_ENDPOINT         ""
+# Environment variables
+ENV DAEMON_MODE=false
+ENV PROXY_UP=""
+ENV PROXY_PORT=8080
+ENV PROXY_USER=""
+ENV PROXY_PASS=""
+ENV WIREGUARD_UP=""
+ENV WIREGUARD_CONFIG=""
+ENV WIREGUARD_INTERFACE_PRIVATE_KEY=""
+ENV WIREGUARD_INTERFACE_DNS="1.1.1.1"
+ENV WIREGUARD_INTERFACE_ADDRESS=""
+ENV WIREGUARD_PEER_PUBLIC_KEY=""
+ENV WIREGUARD_PEER_ALLOWED_IPS="0.0.0.0/0"
+ENV WIREGUARD_PEER_ENDPOINT=""
 
-ENTRYPOINT  [ "entrypoint.sh" ]
+ENTRYPOINT [ "entrypoint.sh" ]

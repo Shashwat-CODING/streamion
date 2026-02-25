@@ -93,15 +93,20 @@ func main() {
 	check(err)
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("User-Agent", "1.1.1.1/2003111800.1")
-	req.Header.Set("Accept-Language", "en-us")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
 	res, err := http.DefaultClient.Do(req)
 	check(err)
 
-	resBytes, err := ioutil.ReadAll(res.Body)
+	resBytes, err := io.ReadAll(res.Body)
 	check(err)
+	defer res.Body.Close()
+
+	if res.StatusCode != 200 {
+		panic(fmt.Sprintf("Registration API failed with status %d: %s", res.StatusCode, string(resBytes)))
+	}
 
 	var response *response
 	err = json.Unmarshal(resBytes, &response)
@@ -113,13 +118,19 @@ func main() {
 	check(err)
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("User-Agent", "1.1.1.1/2003111800.1")
-	req.Header.Set("Accept-Language", "en-us")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Authorization", "Bearer "+response.Result.Token)
 
 	res, err = http.DefaultClient.Do(req)
 	check(err)
+	defer res.Body.Close()
+	
+	if res.StatusCode != 200 {
+		resBytes, _ = io.ReadAll(res.Body)
+		panic(fmt.Sprintf("Enable WARP API failed with status %d: %s", res.StatusCode, string(resBytes)))
+	}
 
 	fmt.Println(`[Interface]
 PrivateKey = ` + base64.StdEncoding.EncodeToString(sk[:32]) + `
