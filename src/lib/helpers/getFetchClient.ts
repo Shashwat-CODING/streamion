@@ -95,9 +95,18 @@ export const getFetchClient = (config: Config): {
                         }
                         controller.close();
                     } catch (e: any) {
-                        console.error("[getFetchClient] Error reading stream:", e?.message || e);
-                        controller.error(e);
-                        // Rotate proxy asynchronously if stream dies and auto_proxy is enabled
+                        const msg: string = e?.message || String(e);
+                        // "error reading a body from connection" is a normal TCP reset
+                        // (e.g. client disconnected). Log at debug level, not error.
+                        if (msg.includes("error reading a body from connection")) {
+                            console.debug("[getFetchClient] Stream closed by remote:", msg);
+                        } else {
+                            console.error("[getFetchClient] Error reading stream:", msg);
+                        }
+                        // Signal the response consumer that the stream ended prematurely,
+                        // but do NOT re-throw — that would surface as an unhandled rejection.
+                        try { controller.error(e); } catch { /* already errored/closed */ }
+                        // Rotate proxy asynchronously if auto_proxy is enabled
                         if (config.networking.auto_proxy) {
                             import("./proxyManager.ts").then(m => m.markProxyFailed()).catch(() => { });
                         }

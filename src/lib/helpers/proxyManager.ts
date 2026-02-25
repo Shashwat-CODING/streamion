@@ -47,6 +47,7 @@ let accessToken: string | null = null;
 let freeLocations: Location[] = [];
 let isInitialized = false;
 let initializationPromise: Promise<void> | null = null;
+let rotationPromise: Promise<string | null> | null = null;
 let vpnSource = 1;
 
 // --- Helpers ---
@@ -272,7 +273,22 @@ export function getCurrentProxy(): string | null {
  * Will try multiple locations until a working proxy is found.
  */
 export async function rotateProxy(): Promise<string | null> {
+    // Deduplicate concurrent rotation requests — only one rotation runs at a time.
+    if (rotationPromise) {
+        console.log(`[ProxyManager] Rotation already in progress, waiting for it to finish...`);
+        return rotationPromise;
+    }
+
     console.log(`[ProxyManager] Rotation requested. Source: ${vpnSource}`);
+    rotationPromise = _doRotate();
+    try {
+        return await rotationPromise;
+    } finally {
+        rotationPromise = null;
+    }
+}
+
+async function _doRotate(): Promise<string | null> {
 
     if (vpnSource === 2) {
         // Urban VPN Logic
