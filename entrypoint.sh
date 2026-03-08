@@ -42,7 +42,7 @@ echo "[ENTRYPOINT] Proxy is ready!"
 
 # Start Proxy Check
 echo "[ENTRYPOINT] Checking proxy connection..."
-curl -s -x http://127.0.0.1:8080 https://cloudflare.com/cdn-cgi/trace
+curl -s -x socks5://127.0.0.1:8080 https://cloudflare.com/cdn-cgi/trace
 echo ""
 echo "[ENTRYPOINT] Proxy check complete."
 
