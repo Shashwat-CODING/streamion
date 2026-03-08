@@ -2,12 +2,12 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"net/http"
 	"net/netip"
 	"strings"
 	"time"
@@ -21,134 +21,253 @@ import (
 type params struct {
 	User     string `env:"PROXY_USER" envDefault:""`
 	Password string `env:"PROXY_PASS" envDefault:""`
-	Port     string `env:"PORT" envDefault:"8080"`
+	Port     string `env:"PORT" envDefault:"1080"`
 	// WireGuard Params
 	WgPrivateKey    string `env:"WIREGUARD_INTERFACE_PRIVATE_KEY"`
 	WgAddress       string `env:"WIREGUARD_INTERFACE_ADDRESS"` // e.g., 10.0.0.2/32
 	WgPeerPublicKey string `env:"WIREGUARD_PEER_PUBLIC_KEY"`
-	WgPeerEndpoint  string `env:"WIREGUARD_PEER_ENDPOINT"`     // e.g., 1.2.3.4:51820
+	WgPeerEndpoint  string `env:"WIREGUARD_PEER_ENDPOINT"` // e.g., 1.2.3.4:51820
 	WgDNS           string `env:"WIREGUARD_INTERFACE_DNS" envDefault:"1.1.1.1"`
 }
 
+// SOCKS5 constants
+const (
+	socks5Version = byte(0x05)
+
+	// Auth methods
+	authNone     = byte(0x00)
+	authPassword = byte(0x02)
+	authNoAccept = byte(0xFF)
+
+	// Commands
+	cmdConnect = byte(0x01)
+
+	// Address types
+	addrIPv4   = byte(0x01)
+	addrDomain = byte(0x03)
+	addrIPv6   = byte(0x04)
+
+	// Reply codes
+	repSuccess         = byte(0x00)
+	repFailure         = byte(0x01)
+	repNotAllowed      = byte(0x02)
+	repNetUnreachable  = byte(0x03)
+	repHostUnreachable = byte(0x04)
+	repConnRefused     = byte(0x05)
+	repCmdNotSupported = byte(0x07)
+	repAddrNotSupported = byte(0x08)
+)
+
 var tnet *netstack.Net
 
-func handleTunneling(w http.ResponseWriter, r *http.Request) {
-	dest := r.URL.Host
-	if dest == "" {
-		dest = r.Host
-	}
+// handleSocks5 handles a single SOCKS5 client connection.
+func handleSocks5(conn net.Conn, cfg params) {
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
-	// Hijack the connection first to allow custom response writing
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+	// --- Step 1: Client greeting ---
+	// +----+----------+----------+
+	// |VER | NMETHODS | METHODS  |
+	// +----+----------+----------+
+	// | 1  |    1     | 1-255    |
+	// +----+----------+----------+
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		log.Printf("[SOCKS5] Failed to read greeting header: %v", err)
 		return
 	}
-	client_conn, _, err := hijacker.Hijack()
-	if err != nil {
-		// If hijack fails, we can't do much as headers might be sent or connection broken
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+	if header[0] != socks5Version {
+		log.Printf("[SOCKS5] Unsupported SOCKS version: %d", header[0])
+		return
+	}
+	nMethods := int(header[1])
+	methods := make([]byte, nMethods)
+	if _, err := io.ReadFull(conn, methods); err != nil {
+		log.Printf("[SOCKS5] Failed to read methods: %v", err)
 		return
 	}
 
-	var dest_conn net.Conn
+	// --- Step 2: Auth negotiation ---
+	useAuth := cfg.User != "" && cfg.Password != ""
+	if useAuth {
+		// Check client supports username/password auth (0x02)
+		supported := false
+		for _, m := range methods {
+			if m == authPassword {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			conn.Write([]byte{socks5Version, authNoAccept})
+			log.Printf("[SOCKS5] Client does not support password auth, rejecting")
+			return
+		}
+		conn.Write([]byte{socks5Version, authPassword})
 
-	if tnet == nil {
-		dest_conn, err = net.DialTimeout("tcp", dest, 10*time.Second)
+		// Sub-negotiation: username/password (RFC 1929)
+		// +----+------+----------+------+----------+
+		// |VER | ULEN |  UNAME   | PLEN |  PASSWD  |
+		// +----+------+----------+------+----------+
+		// | 1  |  1   | 1 to 255 |  1   | 1 to 255 |
+		// +----+------+----------+------+----------+
+		authHeader := make([]byte, 2)
+		if _, err := io.ReadFull(conn, authHeader); err != nil {
+			log.Printf("[SOCKS5] Failed to read auth sub-negotiation: %v", err)
+			return
+		}
+		// authHeader[0] is sub-negotiation version (should be 0x01)
+		uLen := int(authHeader[1])
+		uName := make([]byte, uLen)
+		if _, err := io.ReadFull(conn, uName); err != nil {
+			return
+		}
+		pLenBuf := make([]byte, 1)
+		if _, err := io.ReadFull(conn, pLenBuf); err != nil {
+			return
+		}
+		pLen := int(pLenBuf[0])
+		passwd := make([]byte, pLen)
+		if _, err := io.ReadFull(conn, passwd); err != nil {
+			return
+		}
+
+		if string(uName) != cfg.User || string(passwd) != cfg.Password {
+			log.Printf("[AUTH] Failed auth for user %q from %s", string(uName), conn.RemoteAddr())
+			conn.Write([]byte{0x01, 0x01}) // failure
+			return
+		}
+		conn.Write([]byte{0x01, 0x00}) // success
+		log.Printf("[AUTH] Authenticated user %q from %s", string(uName), conn.RemoteAddr())
 	} else {
-		// Use tnet.Dial to connect through WireGuard
-		dest_conn, err = tnet.Dial("tcp", dest)
+		// No auth required
+		hasNone := false
+		for _, m := range methods {
+			if m == authNone {
+				hasNone = true
+				break
+			}
+		}
+		if !hasNone {
+			conn.Write([]byte{socks5Version, authNoAccept})
+			return
+		}
+		conn.Write([]byte{socks5Version, authNone})
 	}
 
-	if err != nil {
-		log.Printf("[ERROR] TUNNEL Dial failed to %s: %v", dest, err)
-		// Send a 503 to the client through the hijacked connection and close
-		// Simple HTTP response since we hijacked
-		client_conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
-		client_conn.Close()
+	// --- Step 3: Client request ---
+	// +----+-----+-------+------+----------+----------+
+	// |VER | CMD |  RSV  | ATYP | DST.ADDR | DST.PORT |
+	// +----+-----+-------+------+----------+----------+
+	// | 1  |  1  | X'00' |  1   | Variable |    2     |
+	// +----+-----+-------+------+----------+----------+
+	reqHeader := make([]byte, 4)
+	if _, err := io.ReadFull(conn, reqHeader); err != nil {
+		log.Printf("[SOCKS5] Failed to read request: %v", err)
+		return
+	}
+	if reqHeader[0] != socks5Version {
+		return
+	}
+	if reqHeader[1] != cmdConnect {
+		sendReply(conn, repCmdNotSupported, nil, 0)
+		log.Printf("[SOCKS5] Unsupported command: %d", reqHeader[1])
 		return
 	}
 
-	// Write 200 Connection Established to the client
-	// This signals the client that the tunnel is ready
-	_, err = client_conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
-	if err != nil {
-		log.Printf("[ERROR] TUNNEL Write 200 failed: %v", err)
-		dest_conn.Close()
-		client_conn.Close()
+	// Parse destination address
+	var dest string
+	switch reqHeader[3] {
+	case addrIPv4:
+		addr := make([]byte, 4)
+		if _, err := io.ReadFull(conn, addr); err != nil {
+			return
+		}
+		dest = net.IP(addr).String()
+	case addrIPv6:
+		addr := make([]byte, 16)
+		if _, err := io.ReadFull(conn, addr); err != nil {
+			return
+		}
+		dest = net.IP(addr).String()
+	case addrDomain:
+		lenBuf := make([]byte, 1)
+		if _, err := io.ReadFull(conn, lenBuf); err != nil {
+			return
+		}
+		domain := make([]byte, int(lenBuf[0]))
+		if _, err := io.ReadFull(conn, domain); err != nil {
+			return
+		}
+		dest = string(domain)
+	default:
+		sendReply(conn, repAddrNotSupported, nil, 0)
 		return
 	}
 
-	go transfer(dest_conn, client_conn)
-	go transfer(client_conn, dest_conn)
+	portBuf := make([]byte, 2)
+	if _, err := io.ReadFull(conn, portBuf); err != nil {
+		return
+	}
+	port := binary.BigEndian.Uint16(portBuf)
+	destAddr := fmt.Sprintf("%s:%d", dest, port)
+
+	// --- Step 4: Dial destination ---
+	conn.SetDeadline(time.Time{}) // clear deadline for long-lived tunnel
+
+	log.Printf("[CONNECT] %s -> %s", conn.RemoteAddr(), destAddr)
+
+	var destConn net.Conn
+	var err error
+	if tnet == nil {
+		destConn, err = net.DialTimeout("tcp", destAddr, 10*time.Second)
+	} else {
+		destConn, err = tnet.Dial("tcp", destAddr)
+	}
+	if err != nil {
+		log.Printf("[ERROR] Dial failed to %s: %v", destAddr, err)
+		sendReply(conn, repHostUnreachable, nil, 0)
+		return
+	}
+	defer destConn.Close()
+
+	// --- Step 5: Send success reply ---
+	// Use the local address of the outbound connection as BND.ADDR / BND.PORT
+	localAddr := destConn.LocalAddr().(*net.TCPAddr)
+	sendReply(conn, repSuccess, localAddr.IP, uint16(localAddr.Port))
+
+	// --- Step 6: Pipe data bidirectionally ---
+	go transfer(destConn, conn)
+	transfer(conn, destConn)
+}
+
+// sendReply writes a SOCKS5 reply back to the client.
+func sendReply(w io.Writer, rep byte, ip net.IP, port uint16) {
+	// Use a zeroed IPv4 address if none provided
+	if ip == nil || len(ip) == 0 {
+		ip = net.IPv4zero.To4()
+	}
+	addr := ip.To4()
+	atyp := addrIPv4
+	if addr == nil {
+		addr = ip.To16()
+		atyp = addrIPv6
+	}
+
+	reply := make([]byte, 6+len(addr))
+	reply[0] = socks5Version
+	reply[1] = rep
+	reply[2] = 0x00 // RSV
+	reply[3] = atyp
+	copy(reply[4:], addr)
+	binary.BigEndian.PutUint16(reply[4+len(addr):], port)
+	w.Write(reply)
 }
 
 func transfer(destination io.WriteCloser, source io.ReadCloser) {
 	defer destination.Close()
 	defer source.Close()
 	io.Copy(destination, source)
-}
-
-func handleHTTP(w http.ResponseWriter, r *http.Request) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	
-	if tnet != nil {
-		// Use tnet.DialContext for HTTP requests
-		transport.DialContext = tnet.DialContext
-	}
-
-	resp, err := transport.RoundTrip(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	defer resp.Body.Close()
-	copyHeader(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
-}
-
-func handleDebug(w http.ResponseWriter, r *http.Request) {
-	if tnet == nil {
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Error: WireGuard not initialized (Direct Mode)"))
-		return
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: tnet.DialContext,
-		},
-		Timeout: 10 * time.Second,
-	}
-
-	resp, err := client.Get("http://ifconfig.me")
-	if err != nil {
-		log.Printf("[DEBUG] VPN Test Failed: %v", err)
-		http.Error(w, fmt.Sprintf("VPN Connection Failed: %v", err), http.StatusServiceUnavailable)
-		return
-	}
-	defer resp.Body.Close()
-	
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to read response: %v", err), http.StatusInternalServerError)
-		return
-	}
-	
-	log.Printf("[DEBUG] VPN Test Success. IP: %s", string(body))
-	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf("VPN Connected! Public IP: %s", string(body))))
-}
-
-func copyHeader(dst, src http.Header) {
-	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
-		}
-	}
 }
 
 func startWireGuard(cfg params) error {
@@ -161,7 +280,6 @@ func startWireGuard(cfg params) error {
 
 	localIPs := []netip.Addr{}
 	if cfg.WgAddress != "" {
-		// Handle CIDR notation if present (e.g., 10.0.0.2/32)
 		addrStr := strings.Split(cfg.WgAddress, "/")[0]
 		addr, err := netip.ParseAddr(addrStr)
 		if err == nil {
@@ -171,7 +289,7 @@ func startWireGuard(cfg params) error {
 			log.Printf("[WARN] Failed to parse local IP: %v", err)
 		}
 	}
-	
+
 	dnsIP, err := netip.ParseAddr(cfg.WgDNS)
 	if err != nil {
 		log.Printf("[WARN] Failed to parse DNS IP, using default: %v", err)
@@ -193,16 +311,13 @@ func startWireGuard(cfg params) error {
 
 	log.Println("[INFO] Initializing WireGuard device...")
 	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
-	
+
 	log.Printf("[INFO] Configuring peer endpoint: %s", cfg.WgPeerEndpoint)
 
-	// Convert keys from Base64 to Hex
-	// wireguard-go expects hex keys in UAPI, but inputs are usually Base64
 	privateKeyHex, err := base64ToHex(cfg.WgPrivateKey)
 	if err != nil {
 		return fmt.Errorf("invalid private key (base64 decode failed): %w", err)
 	}
-
 	publicKeyHex, err := base64ToHex(cfg.WgPeerPublicKey)
 	if err != nil {
 		return fmt.Errorf("invalid peer public key (base64 decode failed): %w", err)
@@ -218,7 +333,7 @@ allowed_ip=0.0.0.0/0
 		return fmt.Errorf("failed to configure device: %w", err)
 	}
 	log.Println("[INFO] WireGuard peer configured")
-	
+
 	if err := dev.Up(); err != nil {
 		return fmt.Errorf("failed to bring up device: %w", err)
 	}
@@ -229,8 +344,8 @@ allowed_ip=0.0.0.0/0
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.Println("[STARTUP] Initializing HTTP Proxy with Userspace WireGuard")
-	
+	log.Println("[STARTUP] Initializing SOCKS5 Proxy with Userspace WireGuard")
+
 	cfg := params{}
 	if err := env.Parse(&cfg); err != nil {
 		log.Printf("[WARN] Config parse warning: %+v\n", err)
@@ -247,58 +362,22 @@ func main() {
 		log.Fatalf("[FATAL] Failed to start WireGuard: %v", err)
 	}
 
-	log.Printf("[STARTUP] Starting HTTP proxy server on port %s\n", cfg.Port)
-
-	server := &http.Server{
-		Addr: ":" + cfg.Port,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if cfg.User != "" && cfg.Password != "" {
-				user, pass, ok := r.BasicAuth()
-				if !ok || user != cfg.User || pass != cfg.Password {
-					log.Printf("[AUTH] Unauthorized access attempt from %s", r.RemoteAddr)
-					w.Header().Set("Proxy-Authenticate", `Basic realm="Proxy"`)
-					http.Error(w, "Unauthorized", http.StatusProxyAuthRequired)
-					return
-				}
-			}
-			
-			// Handle CONNECT (HTTPS tunnel)
-			if r.Method == http.MethodConnect {
-				log.Printf("[CONNECT] %s -> %s", r.RemoteAddr, r.Host)
-				handleTunneling(w, r)
-				return
-			}
-			
-			// Direct requests to the proxy server (Health check & Debug)
-			// We check r.URL.Host == "" which means it's a direct request, not a proxy request
-			if r.URL.Host == "" {
-				if r.URL.Path == "/" {
-					log.Printf("[HEALTH] Health check from %s", r.RemoteAddr)
-					w.WriteHeader(http.StatusOK)
-					if tnet != nil {
-						w.Write([]byte("Proxy Running via Userspace WireGuard"))
-					} else {
-						w.Write([]byte("Proxy Running in Direct Mode (No VPN)"))
-					}
-					return
-				}
-				
-				if r.URL.Path == "/debug" {
-					log.Printf("[DEBUG] Debug check from %s", r.RemoteAddr)
-					handleDebug(w, r)
-					return
-				}
-			}
-
-			// Proxy HTTP requests
-			log.Printf("[HTTP] %s %s -> %s", r.Method, r.RemoteAddr, r.URL.String())
-			handleHTTP(w, r)
-		}),
+	addr := ":" + cfg.Port
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("[FATAL] Failed to listen on %s: %v", addr, err)
 	}
-	
-	log.Println("[READY] Proxy server is ready to accept connections")
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("[FATAL] Server error: %v", err)
+	defer listener.Close()
+
+	log.Printf("[READY] SOCKS5 proxy listening on %s", addr)
+
+	for {
+		clientConn, err := listener.Accept()
+		if err != nil {
+			log.Printf("[ERROR] Accept failed: %v", err)
+			continue
+		}
+		go handleSocks5(clientConn, cfg)
 	}
 }
 
