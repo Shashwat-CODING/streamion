@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -ex
+
 echo "[ENTRYPOINT] Starting WireGuard SOCKS5 Proxy"
 
 if [[ -z "${WIREGUARD_INTERFACE_PRIVATE_KEY}" ]]; then
@@ -22,9 +23,8 @@ echo "[ENTRYPOINT] Starting SOCKS5 proxy server (internal)..."
 server &
 SERVER_PID=$!
 
-# Wait for SOCKS5 on port 1080
 echo "[ENTRYPOINT] Waiting for proxy to be ready on port 1080..."
-until curl -s --max-time 3 --socks5 127.0.0.1:1080 https://1.1.1.1 -o /dev/null; do
+until nc -z 127.0.0.1 1080 2>/dev/null; do
     if ! kill -0 $SERVER_PID 2>/dev/null; then
         echo "[FATAL] Server process exited unexpectedly!"
         wait $SERVER_PID
@@ -37,7 +37,7 @@ done
 echo "[ENTRYPOINT] Proxy is ready!"
 
 echo "[ENTRYPOINT] Checking proxy connection..."
-curl -s --socks5 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace
+curl -s --max-time 15 --socks5 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace
 echo ""
 echo "[ENTRYPOINT] Proxy check complete."
 
