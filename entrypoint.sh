@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
 set -ex
+echo "[ENTRYPOINT] Starting WireGuard SOCKS5 Proxy"
 
-echo "[ENTRYPOINT] Starting WireGuard HTTP Proxy"
-
-# Check if WireGuard config should be generated
 if [[ -z "${WIREGUARD_INTERFACE_PRIVATE_KEY}" ]]; then
     echo "[ENTRYPOINT] Generating Cloudflare Warp configuration..."
     
-    # Run warp binary to generate config
     WARP_OUTPUT=$(warp)
     
-    # Parse the warp output to extract config values
     export WIREGUARD_INTERFACE_PRIVATE_KEY=$(echo "$WARP_OUTPUT" | grep "PrivateKey" | awk '{print $3}')
     export WIREGUARD_INTERFACE_ADDRESS=$(echo "$WARP_OUTPUT" | grep "Address" | awk '{print $3}')
     export WIREGUARD_PEER_PUBLIC_KEY=$(echo "$WARP_OUTPUT" | grep "PublicKey" | awk '{print $3}')
@@ -22,14 +18,13 @@ else
     echo "[ENTRYPOINT] Using provided WireGuard configuration"
 fi
 
-# Start the proxy server in the background
-echo "[ENTRYPOINT] Starting HTTP proxy server (internal)..."
+echo "[ENTRYPOINT] Starting SOCKS5 proxy server (internal)..."
 server &
 SERVER_PID=$!
 
-# Wait for proxy to start
-echo "[ENTRYPOINT] Waiting for proxy to be ready on port 8080..."
-while ! curl -v http://127.0.0.1:8080/ 2>&1 | grep "Proxy Running"; do
+# Wait for SOCKS5 on port 1080
+echo "[ENTRYPOINT] Waiting for proxy to be ready on port 1080..."
+until curl -s --max-time 3 --socks5 127.0.0.1:1080 https://1.1.1.1 -o /dev/null; do
     if ! kill -0 $SERVER_PID 2>/dev/null; then
         echo "[FATAL] Server process exited unexpectedly!"
         wait $SERVER_PID
@@ -38,14 +33,13 @@ while ! curl -v http://127.0.0.1:8080/ 2>&1 | grep "Proxy Running"; do
     echo "[ENTRYPOINT] Proxy not ready yet... retrying in 1s"
     sleep 1
 done
+
 echo "[ENTRYPOINT] Proxy is ready!"
 
-# Start Proxy Check
 echo "[ENTRYPOINT] Checking proxy connection..."
-curl -s -x socks5://127.0.0.1:8080 https://cloudflare.com/cdn-cgi/trace
+curl -s --socks5 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace
 echo ""
 echo "[ENTRYPOINT] Proxy check complete."
 
-# Start Streamion
 echo "[ENTRYPOINT] Starting Streamion..."
 exec deno task dev
