@@ -19,27 +19,8 @@ else
     echo "[ENTRYPOINT] Using provided WireGuard configuration"
 fi
 
-echo "[ENTRYPOINT] Starting SOCKS5 proxy server (internal)..."
+echo "[ENTRYPOINT] Starting SOCKS5 proxy server..."
 server &
-SERVER_PID=$!
-
-echo "[ENTRYPOINT] Waiting for proxy to be ready on port 1080..."
-until nc -z 127.0.0.1 1080 2>/dev/null; do
-    if ! kill -0 $SERVER_PID 2>/dev/null; then
-        echo "[FATAL] Server process exited unexpectedly!"
-        wait $SERVER_PID
-        exit 1
-    fi
-    echo "[ENTRYPOINT] Proxy not ready yet... retrying in 1s"
-    sleep 1
-done
-
-echo "[ENTRYPOINT] Proxy is ready!"
-
-echo "[ENTRYPOINT] Checking proxy connection..."
-curl -s --max-time 15 --socks5 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace
-echo ""
-echo "[ENTRYPOINT] Proxy check complete."
 
 echo "[ENTRYPOINT] Starting Streamion..."
 exec deno task dev
